@@ -1,19 +1,12 @@
-import os, json, cv2
+import streamlit as st
 import openai
-import pyttsx3
-import speech_recognition as sr
-from ultralytics import YOLO
-from dotenv import load_dotenv
+import json
+from PIL import Image
 
-# ---------- SETUP ----------
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Load your OpenAI key from Streamlit secrets
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-engine = pyttsx3.init()
-recognizer = sr.Recognizer()
-model = YOLO("yolov8n.pt")   # light YOLOv8 model
-
-# ---------- MEMORY ----------
+# --- Load and save memory ---
 def load_memory():
     try:
         with open("memory.json", "r") as f:
@@ -27,80 +20,43 @@ def save_memory(memory):
 
 memory = load_memory()
 
-# ---------- HELPERS ----------
-def speak(text):
-    print("AI:", text)
-    engine.say(text)
-    engine.runAndWait()
+# --- Streamlit UI ---
+st.title("🧠 AI Home Assistant Demo")
+st.write("This assistant can remember what you tell it, analyze images, and talk to you like a household AI.")
 
-def listen_or_type():
-    try:
-        with sr.Microphone() as source:
-            print("🎤 Speak now (or wait 5 s to type):")
-            recognizer.adjust_for_ambient_noise(source)
-            audio = recognizer.listen(source, timeout=5)
-        return recognizer.recognize_google(audio)
-    except Exception:
-        return input("⌨️ Type your message: ")
+uploaded_image = st.file_uploader("📸 Upload a picture (optional):", type=["jpg", "png", "jpeg"])
+user_text = st.text_input("🗣️ Say or type something to your assistant:")
 
-def ask_gpt(prompt):
-    completion = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a friendly household assistant that remembers simple facts from previous chats."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.7
-    )
-    return completion.choices[0].message.content.strip()
-
-# ---------- MAIN ----------
-def main():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("❌ Could not access webcam.")
-        return
-
-    print("Press Q in the camera window to quit.")
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        results = model(frame)
-        annotated = results[0].plot()
-        cv2.imshow("Mini Vision Assistant (press Q to quit)", annotated)
-
-        user_text = listen_or_type()
-        if not user_text:
-            continue
-        if user_text.lower() in ["quit", "exit", "stop"]:
-            break
-
-        # --- simple memory capture ---
-        lower = user_text.lower()
-        if "i like" in lower or "my wife likes" in lower:
+if st.button("Send"):
+    if user_text:
+        # Remember "I like" statements
+        if "i like" in user_text.lower() or "my wife likes" in user_text.lower():
             fact = f"{user_text.strip('. ')}."
             if fact not in memory["facts"]:
                 memory["facts"].append(fact)
                 save_memory(memory)
-                print("💾 Remembered that!")
+                st.success("💾 Remembered that!")
 
-        # --- build context for GPT ---
-        visible = [results[0].names[int(box.cls)] for box in results[0].boxes]
-        seen = ", ".join(set(visible)) if visible else "nothing obvious"
-        context = " | ".join(memory["facts"]) or "no stored memories yet"
-        prompt = f"You currently remember: {context}. You see {seen}. User said: {user_text}"
+        # Detect uploaded image
+        image_desc = "No image provided."
+        if uploaded_image:
+            img = Image.open(uploaded_image)
+            st.image(img, caption="Uploaded scene", use_container_width=True)
+            image_desc = "User uploaded a photo."
 
-        reply = ask_gpt(prompt)
-        speak(reply)
+        # Build context
+        context = " | ".join(memory["facts"]) or "No stored memories yet"
+        prompt = f"You currently remember: {context}. {image_desc} User said: {user_text}"
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-# ---------- RUN ----------
-if __name__ == "__main__":
-    main()
+        # Ask GPT
+        with st.spinner("Thinking..."):
+            response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a friendly household assistant that remembers simple facts and comments on images."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.7,
+            )
+            reply = response.choices[0].message.content
+        st.write("**Assistant:**", reply)
